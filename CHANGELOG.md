@@ -8,6 +8,10 @@
 
 All notable changes to the `quran_tarteel` package are documented in this file.
 
+## 0.2.1
+
+* Maintenance release and package metadata update for pub.dev publishing.
+
 ## 0.2.0 — Matching System Improvements
 
 * **Improved Word Matching & False-Green Rejection**: Refined `QuranDictationMatcher` and `DictationSequencer` alignment calibration, confidence weighting, and boundary handling to prevent false-green commits and cross-word leaks.
