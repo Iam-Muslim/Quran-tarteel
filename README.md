@@ -4,26 +4,23 @@
 ### الحمد لله رب العالمين • بفضل الله و برحمته
 
 # Quran Tarteel — ترتيل القرآن
-**Real-time on-device Quran recitation tracking, dynamic word alignment, and deterministic Tajweed verification for Flutter & Dart powered by TajweedFormer V4**
+**On-device Quran recitation tracking, dynamic DTW word alignment, deterministic Tajweed grading, and phonetic voice search for Flutter & Dart powered by TajweedFormer V4.**
 
 *Dedicated for the sake of Allah (لوجه الله تعالى) — free and non-commercial.*
 
-*[QuranLab](https://quranlab.ai)'s [TajweedFormer V4](https://huggingface.co/Quran-Lab/tajweedformer-v4) model.*
+*Built on [QuranLab](https://quranlab.ai)'s [TajweedFormer V4](https://huggingface.co/Quran-Lab/tajweedformer-v4) (`quranlab_tajweedformer`).*
 
 </div>
 
 ---
 
-## Overview
+## What It Does
 
-`quran_tarteel` is a headless, zero-UI, zero-strings Quran recitation tracking, Tajweed grading, and phonetic search engine built directly on top of the official `quranlab_tajweedformer` SDK 4.0:
-* **Direct SDK Communication:** Your app owns `TajweedClient`, `TajweedModel`, and `TajweedSession` directly from `quranlab_tajweedformer` with zero hidden wrappers, zero guessed defaults, and zero swallowed SDK errors.
-* **Two Clean Public Entrypoints:**
-  1. **Model Output Only (`TajweedTakeDecoder` via `quran_tarteel.dart`):** Feed `TajweedSession.chunks` directly to obtain phonetic tokens, frame timestamps, `qalqalahScore`, and `altProbs` without loading any Quran reference or alignment engine.
-  2. **Pure-Dart Scoring Only (`package:quran_tarteel/scoring.dart`):** Pass `expected_tj3.zfx` bytes + `PhonemeVocabulary` + `TranscriptionResult` into `QuranScorer` with zero Flutter/recorder dependencies.
-  3. **Full SDK + Audio + Scoring (`package:quran_tarteel/quran_tarteel.dart`):** Combines `quranlab_tajweedformer`, optional 16 kHz PCM capture (`AudioProcessor` / `Pcm16StreamNormalizer`), `TajweedTakeDecoder`, `TajweedSessionBinder`, and `scoring.dart`.
-* **Deterministic Tajweed Grading:** Bidirectional CTC blank attribution (`SpanDurationCalculator`) for Madd, Ghunnah, and Shaddah, Qalqalah burst scoring via `attr_qalqalah`, and streaming frontier holding (`HeldFrontierShield`).
-* **6,236-Ayah Phonetic Voice Search:** Myers 64-bit bit-parallel search in a background isolate (`VoiceSearchController`).
+- **Recitation Tracking (`QuranScorer`):** Aligns streaming ASR phoneme emissions against `expected_tj3.zfx` in a background worker (`Isolate` on IO, async stream on Web), supporting within-surah word/ayah targeting (`setTarget`, `setTargetSurah`, `setTargetAyah`, `setTargetWord`, `jumpToWord`), pronunciation variants, and word skipping up to `maxSkipWords`.
+- **Deterministic Tajweed Grading (`TajweedEngine`):** Evaluates Madd (`1..7`), Qalqalah (`8`), Shaddah (`9`), Ghunnah (`10`), letter substitutions/deletions, and harakat (`checkTashkeel`) using active SDK heads (`log_probs`, `attr_qalqalah`, `conf`), bidirectional CTC blank attribution (`SpanDurationCalculator`), and streaming commit protection (`HeldFrontierShield`).
+- **Auto-Reanchor (`AutoReanchorFinder`):** When enabled (`TrackerConfig.enableAutoReanchor`), recovers lost position by scanning strictly forward in the active Surah once unconsumed ASR buffer hits `reanchorStallThreshold`, with Mutashabihat ambiguity rejection.
+- **Voice Search (`VoiceSearchController`):** Searches all 6,236 ayahs in a background isolate using 64-bit Myers bit-parallel fuzzy matching with optional prefix stripping (`A'udhu` / `Basmala`), adaptive error ratio, and uniqueness scoring.
+- **Zero UI / Zero Swallowed Errors:** Emits typed structural events (`WordMatchedEvent`, `AutoReanchorEvent`, `VoiceSearchResult`) and propagates SDK/validation errors explicitly via `QuranTarteelException`.
 
 ---
 
@@ -31,48 +28,35 @@
 
 ```text
 package:quran_tarteel/
-├── quran_tarteel.dart   # Re-exports quranlab_tajweedformer + scoring.dart + AudioProcessor + TajweedTakeDecoder + TajweedSessionBinder
-└── scoring.dart         # Pure-Dart QuranRepository, QuranScorer, VoiceSearchController, TajweedConfig, TrackerConfig
+├── quran_tarteel.dart   # Re-exports quranlab_tajweedformer + scoring.dart + AudioProcessor + Pcm16StreamNormalizer + TajweedTakeDecoder + TajweedSessionBinder
+└── scoring.dart         # Pure-Dart QuranRepository, QuranScorer, VoiceSearchController, config, and Tajweed types (no Flutter/record deps)
 ```
 
 ---
 
-## Usage Examples
+## Quick Start
 
-### 1. Model Output Only (No Quran Reference / Matching)
+### 1. API Key Activation (`quranlab_tajweedformer`)
+Get an API key (`qlk_v1_...`) from [sdk.quranlab.ai](https://sdk.quranlab.ai). Initialize `TajweedClient` once per process and fetch `TajweedModel`:
+
 ```dart
 import 'package:quran_tarteel/quran_tarteel.dart';
 
-final client = await TajweedClient.create('qlk_v1_YOUR_KEY');
+// Direct key or injected via --dart-define=QURANLAB_KEY=qlk_v1_...
+const apiKey = String.fromEnvironment('QURANLAB_KEY', defaultValue: 'qlk_v1_YOUR_KEY');
+final client = await TajweedClient.create(apiKey);
 final model = await client.model();
-final session = await model.listen(
-  options: const TajweedSessionOptions(
-    heads: TajweedTakeDecoder.activeHeads,
-    topK: TajweedTakeDecoder.defaultTopK,
-  ),
-);
-
-final decoder = TajweedTakeDecoder(vocab: model.tokens);
-session.chunks.listen((chunk) {
-  final result = decoder.decodeChunk(chunk);
-  // result.text, result.tokens, result.timestamps, result.durations, result.neuralAcoustics
-});
 ```
 
-### 2. Full Recitation Tracking & Tajweed Scoring
+### 2. Full Microphone Recitation Tracking (`model.listen()` + `TajweedSessionBinder`)
 ```dart
 import 'package:flutter/services.dart';
 import 'package:quran_tarteel/quran_tarteel.dart';
 
-final client = await TajweedClient.create('qlk_v1_YOUR_KEY');
-final model = await client.model();
-
-// Load expected_tj3.zfx explicitly and verify model.calibration?.tokensSha256
 final zfxData = await rootBundle.load('assets/model/expected_tj3.zfx');
 final zfxBytes = zfxData.buffer.asUint8List(zfxData.offsetInBytes, zfxData.lengthInBytes);
 
-final repo = QuranRepository();
-repo.loadModelBytes(zfxBytes, model: model);
+final repo = QuranRepository()..loadModelBytes(zfxBytes, model: model);
 
 final qalqalahTau = TajweedTakeDecoder.resolveValidatedQalqalahTau(model);
 final scorer = QuranScorer(
@@ -86,14 +70,15 @@ await scorer.initialize();
 scorer.setTargetAyah(1, 1);
 
 scorer.onWordEvaluated.listen((WordMatchedEvent event) {
-  // Coordinates + typed verdict & ReciterError list (zero UI/strings)
+  // event.surah, event.ayah, event.wordInAyah, event.verdict, event.tajweedErrors
 });
 
 final binder = TajweedSessionBinder(
   vocab: model.tokens,
   scorer: scorer,
-  onError: (err, st) => debugPrint('SDK stream error: $err'),
+  onError: (err, st) => debugPrint('SDK error: $err'),
 );
+
 final session = await model.listen(
   options: const TajweedSessionOptions(
     heads: TajweedTakeDecoder.activeHeads,
@@ -101,44 +86,61 @@ final session = await model.listen(
   ),
 );
 await binder.attach(session);
+
+// On stop:
+await binder.finishAndFlush(session);
 ```
 
-### 3. Pure-Dart Scoring Only (`package:quran_tarteel/scoring.dart`)
+### 3. Adding Scoring to an App That Already Owns `TajweedClient` / `TajweedModel`
+Import `quran_tarteel.dart` alongside your existing `quranlab_tajweedformer` setup. Use `repo.loadModelBytes(zfxBytes, model: model)` and bind any open `TajweedSession` with `TajweedSessionBinder(vocab: model.tokens, scorer: scorer)` — `quran_tarteel` never takes ownership of `client`, `model`, or `session`. See [doc/API_GUIDE.md](doc/API_GUIDE.md) for details.
+
+### 4. Voice Search (`VoiceSearchController`)
 ```dart
-import 'package:quran_tarteel/scoring.dart';
-
-final repo = QuranRepository.fromZfxBytes(
-  zfxBytes,
-  vocabulary: PhonemeVocabulary(
-    names: vocabNames,
-    blank: 0,
-    wordBar: 1,
-  ),
-);
-final scorer = QuranScorer(
+final search = VoiceSearchController(
   repository: repo,
-  config: TrackerConfig(tajweed: TajweedConfig(qalqalahTau: 0.5)),
+  useAdaptiveErrorRatio: true,
+  allowSuffixFallback: true,
 );
-await scorer.initialize();
-scorer.setTargetSurah(1);
-scorer.feedTranscript(transcriptionResult);
-```
+await search.preloadIndex();
 
-See [doc/README.md](doc/README.md) and [doc/API_GUIDE.md](doc/API_GUIDE.md) for architecture details and configuration.
+final session = await model.listen(
+  options: const TajweedSessionOptions(heads: TajweedTakeDecoder.wordOnlyHeads),
+);
+session.chunks.listen((chunk) {
+  final text = TajweedTakeDecoder.formatDecodedText(chunk.decoded.tokens);
+  if (text.isNotEmpty) search.processRealtime(text);
+});
+
+search.onSearchResult.listen((VoiceSearchResult? result) {
+  final top = result?.topMatch; // surah, ayah, wordIdx, score, isUnique
+});
+```
 
 ---
 
-## Requirements for Consuming Apps
-1. **QuranLab API Key** (`qlk_v1_...` from [sdk.quranlab.ai](https://sdk.quranlab.ai)) passed directly to `TajweedClient.create(apiKey)`.
-2. **Platform configuration** for `quranlab_tajweedformer` (Android `minSdk >= 26`, iOS `NSMicrophoneUsageDescription` + simulator `EXCLUDED_ARCHS[sdk=iphonesimulator*] = x86_64`).
-3. **`expected_tj3.zfx` bytes** when using `QuranRepository` / `QuranScorer` / `VoiceSearchController`.
-4. **Optional raw PCM capture (`AudioProcessor`)** only when pushing custom audio into `model.session()` (e.g., WebRTC); standard microphone apps can use `model.listen()` natively.
+## Documentation
+
+- **[Documentation Index & Architecture](doc/README.md)**
+- **[API, SDK Wiring & Configuration](doc/API_GUIDE.md)** — API key setup, 4 integration modes, custom PCM streaming (`AudioProcessor`), `TrackerConfig` / `MatchingPolicy`, and error codes.
+- **[Voice Search & Auto-Reanchor](doc/VOICE_SEARCH_AND_REANCHOR.md)** — Fuzzy index, `VoiceSearchController` API, uniqueness scoring, and forward stall recovery.
+- **[Tajweed Rules & Grading](doc/TAJWEED_RULES_AND_GRADING.md)** — `expected_tj3.zfx` rule IDs (`1..11`), thresholds per `RecitationSpeed`, bidirectional blank attribution, Qalqalah burst scoring, `HeldFrontierShield`, and `ReciterError` interpretation.
+
+---
+
+## Requirements
+
+1. **QuranLab API Key** (`qlk_v1_...` from [sdk.quranlab.ai](https://sdk.quranlab.ai)).
+2. **Platform configuration** for `quranlab_tajweedformer`:
+   - Android: `minSdk >= 26`
+   - iOS: iOS 15+, `NSMicrophoneUsageDescription` in `Info.plist`, and simulator `EXCLUDED_ARCHS[sdk=iphonesimulator*] = x86_64`
+3. **`expected_tj3.zfx` asset** for `QuranRepository`, `QuranScorer`, and `VoiceSearchController`.
+4. **Raw PCM helper (`AudioProcessor`):** Optional; only needed if you push your own 16 kHz audio stream into `model.session()`. Standard mic capture can use `model.listen()`.
 
 ---
 
 ## License (لوجه الله تعالى)
 
-This package and its source code are dedicated for the sake of Allah alone:
-1. **Free to End Users:** You may use, distribute, or modify this software only in apps and services that are completely free of charge to all users.
-2. **Strictly Non-Commercial:** You may not sell this software, put it behind subscriptions, paywalls, or in-app purchases, charge download fees, or monetize it with advertising.
-3. **Pass-Through:** Any forks or derivative works must remain open and inherit these exact terms.
+Dedicated for the sake of Allah alone:
+1. **Free to End Users:** May be used, distributed, or modified only in apps and services completely free of charge to all users.
+2. **Strictly Non-Commercial:** May not be sold, placed behind paywalls/subscriptions/IAPs, or monetized with ads.
+3. **Pass-Through:** Forks and derivative works must remain open under these exact terms.
